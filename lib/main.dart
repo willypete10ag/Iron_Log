@@ -3,8 +3,9 @@ import 'views/lifts_view.dart';
 import 'views/history_view.dart';
 import 'views/account_view.dart';
 import 'views/lift_progress_chart_view.dart';
-import 'utils/storage.dart';
-import 'models/user_account.dart';
+import 'utils/session.dart';
+import 'services/auth_api.dart';
+import 'services/sync_service.dart';
 
 void main() {
   runApp(const IronLogApp());
@@ -20,15 +21,13 @@ class IronLogApp extends StatelessWidget {
       theme: ThemeData.dark().copyWith(
         colorScheme: ColorScheme.fromSeed(seedColor: Colors.orangeAccent),
         scaffoldBackgroundColor: Colors.black,
-        textTheme: const TextTheme(bodyMedium: TextStyle(color: Colors.white)),
       ),
-      home: const AuthGate(), // <-- gate instead of IronLogHome
+      home: const AuthGate(), // start with AuthGate
+      debugShowCheckedModeBanner: false,
     );
   }
 }
 
-/// Shows AccountView until a user is signed in; then shows IronLogHome.
-/// This prevents any "global" data usage.
 class AuthGate extends StatefulWidget {
   const AuthGate({super.key});
 
@@ -37,26 +36,67 @@ class AuthGate extends StatefulWidget {
 }
 
 class _AuthGateState extends State<AuthGate> {
-  UserAccount? _user;
   bool _loading = true;
+  bool _signedIn = false;
+  final _api = AuthApi();
+  final _sync = SyncService();
 
   @override
   void initState() {
     super.initState();
-    _checkUser();
+    _checkRemoteSession();
   }
 
-  Future<void> _checkUser() async {
-    final user = await Storage.getCurrentUser();
+  Future<void> _checkRemoteSession() async {
+    final token = await Session.token;
+    if (token == null) {
+      setState(() {
+        _signedIn = false;
+        _loading = false;
+      });
+      return;
+    }
+
+    try {
+      await _api.me();
+
+      // 🔄 pull latest server data whenever token is still valid
+      try {
+        await _sync.pullFromServer();
+      } catch (e) {
+        debugPrint('pullFromServer on resume error: $e');
+      }
+
+      setState(() {
+        _signedIn = true;
+        _loading = false;
+      });
+    } catch (_) {
+      await Session.clear();
+      setState(() {
+        _signedIn = false;
+        _loading = false;
+      });
+    }
+  }
+
+  Future<void> _handleSignedIn() async {
+    // Just logged in or registered — token now valid
+    try {
+      await _sync.pullFromServer();
+    } catch (e) {
+      debugPrint('pullFromServer error: $e');
+      // If server has nothing yet, seed it
+      try {
+        await _sync.pushToServer();
+      } catch (e2) {
+        debugPrint('pushToServer error: $e2');
+      }
+    }
+
     setState(() {
-      _user = user;
-      _loading = false;
+      _signedIn = true;
     });
-  }
-
-  void _handleSignedIn() async {
-    final user = await Storage.getCurrentUser();
-    setState(() => _user = user);
   }
 
   @override
@@ -67,12 +107,10 @@ class _AuthGateState extends State<AuthGate> {
       );
     }
 
-    if (_user == null) {
-      // Force sign-in: show AccountView only
+    if (!_signedIn) {
       return AccountView(onSignedIn: _handleSignedIn);
     }
 
-    // Signed in: show the main tabbed app
     return const IronLogHome();
   }
 }
@@ -91,7 +129,7 @@ class _IronLogHomeState extends State<IronLogHome> {
     LiftsView(),
     HistoryView(),
     LiftProgressChartView(),
-    AccountView(), // still accessible for change password / sign-out
+    AccountView(),
   ];
 
   void _onItemTapped(int index) {
@@ -106,9 +144,11 @@ class _IronLogHomeState extends State<IronLogHome> {
       body: _pages[_selectedIndex],
       bottomNavigationBar: BottomNavigationBar(
         items: const [
-          BottomNavigationBarItem(icon: Icon(Icons.fitness_center), label: 'Lifts'),
+          BottomNavigationBarItem(
+              icon: Icon(Icons.fitness_center), label: 'Lifts'),
           BottomNavigationBarItem(icon: Icon(Icons.history), label: 'History'),
-          BottomNavigationBarItem(icon: Icon(Icons.show_chart), label: 'Progress'),
+          BottomNavigationBarItem(
+              icon: Icon(Icons.show_chart), label: 'Progress'),
           BottomNavigationBarItem(icon: Icon(Icons.person), label: 'Account'),
         ],
         currentIndex: _selectedIndex,
