@@ -1,0 +1,1 @@
+7 3 * * * cp /data/ironlog.sqlite /backups/ironlog-$(date +\%F).sqlite
