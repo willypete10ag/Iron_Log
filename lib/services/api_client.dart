@@ -5,7 +5,7 @@ import '../utils/session.dart';
 
 class ApiClient {
   final String baseUrl;
-  ApiClient({String? baseUrl}) : baseUrl = baseUrl ?? Env.baseUrl;
+  ApiClient({String? baseUrl}) : baseUrl = baseUrl ?? Env.apiBaseUrl;
 
   Future<http.Response> post(String path, Map<String, dynamic> body) async {
     final token = await Session.token;

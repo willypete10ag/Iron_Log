@@ -8,7 +8,7 @@ class Lift extends ISuspensionBean {
   DateTime lastUpdated;
   List<PRRecord> prHistory;
 
-  // Added for AZListView alphabetical headers
+  // Used by AZListView for alphabetical headers
   String suspensionTag = '';
 
   Lift({
@@ -23,8 +23,17 @@ class Lift extends ISuspensionBean {
         lastUpdated = lastUpdated ?? DateTime.now(),
         prHistory = prHistory ?? [];
 
+  /// These are the permanent, seeded lifts that must always exist.
+  /// - Can't be deleted
+  /// - Can't be renamed
+  /// - But their PR numbers / notes CAN change
   bool get isMainLift =>
-      ['Barbell Bench Press', 'Incline Bench Press', 'Squat'].contains(name);
+      ['Barbell Bench Press', 'Incline Bench Press', 'Squat']
+          .contains(name);
+
+  /// UI rule helpers
+  bool get canDelete => !isMainLift;
+  bool get canRename => !isMainLift;
 
   /// Check if any PR increased compared to another lift
   bool hasPRsIncreasedComparedTo(Lift other) {

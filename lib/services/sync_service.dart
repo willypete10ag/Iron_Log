@@ -1,6 +1,4 @@
 import 'dart:convert';
-import 'package:http/http.dart' as http;
-import '../utils/session.dart';
 import '../utils/storage.dart';
 import '../models/lift.dart';
 import 'api_client.dart';
@@ -9,12 +7,10 @@ class SyncService {
   final ApiClient _api = ApiClient();
 
   /// Pull latest data from server for this user and save locally.
-  /// We pass `since` in future to do incremental sync, but for now we'll just full-pull.
+  /// For now we just full-pull.
   Future<void> pullFromServer() async {
-    // we need auth header, ApiClient.get() already does that
     final res = await _api.get('/sync');
 
-    // debug
     print('SYNC PULL status: ${res.statusCode}');
     print('SYNC PULL body: ${res.body}');
 
@@ -24,27 +20,27 @@ class SyncService {
 
     final data = jsonDecode(res.body) as Map<String, dynamic>;
 
-    // data['lifts'] is a list of maps shaped like server lifts table rows
-    // data['pr_records'] is list of PR rows
-    // We need to convert that into our Lift model shape and save via Storage.saveLifts()
-
     final serverLifts = (data['lifts'] as List).cast<Map<String, dynamic>>();
-    final serverPRs = (data['pr_records'] as List).cast<Map<String, dynamic>>();
+    final serverPRs =
+        (data['pr_records'] as List).cast<Map<String, dynamic>>();
 
-    // Build lifts with their PR history attached
     final mergedLifts = _mergeServerData(serverLifts, serverPRs);
 
-    // Save them locally for current user
+    // Save merged lifts locally
     await Storage.saveLifts(mergedLifts);
+
+    // NOTE: We are NOT clearing pending deletions here. If the client
+    // had local deletes but hasn't pushed yet, we still want to push them.
   }
 
-  /// Push our current local lifts + PRs to the server.
+  /// Push our current local lifts + PRs + pending deletions to the server.
   Future<void> pushToServer() async {
-    // 1. Get current local lifts
+    // 1. Get current local state
     final lifts = await Storage.loadLifts();
+    final pendingDeletes = await Storage.loadPendingDeletions();
 
     // 2. Convert to server wire format
-    final payload = _buildPushPayload(lifts);
+    final payload = _buildPushPayload(lifts, pendingDeletes);
 
     // 3. POST /sync
     final res = await _api.post('/sync', payload);
@@ -56,21 +52,28 @@ class SyncService {
       throw Exception('Sync push failed (${res.statusCode})');
     }
 
-    // Optional: after successful push, you could re-pull to ensure we have
-    // whatever the server merged. We'll skip that for now.
+    // 4. If push succeeded, clear deletions since server knows now.
+    await Storage.clearPendingDeletions();
   }
 
-  /// Helper: turn local Lift objects into the body shape expected by sync_push (your backend).
-  Map<String, dynamic> _buildPushPayload(List<Lift> lifts) {
+  /// Helper: turn local Lift objects and pending deletions into
+  /// the body shape expected by sync_push (backend FastAPI).
+  Map<String, dynamic> _buildPushPayload(
+    List<Lift> lifts,
+    List<PendingDeletion> pendingDeletes,
+  ) {
     final prRecordsList = <Map<String, dynamic>>[];
 
-    // We'll flatten lift.prHistory into standalone pr_records in addition to embedding history.
+    // Build the "lifts" array
     final liftList = lifts.map((lift) {
-      // Track PR history for this lift
+      // Build embedded pr_history (also flatten separately below)
       final historyMaps = lift.prHistory.map((rec) {
+        final recIso = rec.date.toIso8601String();
+
+        // Also push this onto prRecordsList for top-level "pr_records"
         prRecordsList.add({
           'lift_name': lift.name,
-          'date': rec.date.toIso8601String(),
+          'date': recIso,
           'strengthPR': {
             'weight': rec.strengthPR.weight,
             'reps': rec.strengthPR.reps,
@@ -80,12 +83,12 @@ class SyncService {
             'reps': rec.endurancePR.reps,
           },
           'notes': rec.notes,
-          'updated_at': rec.date.toIso8601String(),
+          'updated_at': recIso,
         });
 
         return {
           'lift_name': lift.name,
-          'date': rec.date.toIso8601String(),
+          'date': recIso,
           'strengthPR': {
             'weight': rec.strengthPR.weight,
             'reps': rec.strengthPR.reps,
@@ -95,7 +98,7 @@ class SyncService {
             'reps': rec.endurancePR.reps,
           },
           'notes': rec.notes,
-          'updated_at': rec.date.toIso8601String(),
+          'updated_at': recIso,
         };
       }).toList();
 
@@ -115,41 +118,25 @@ class SyncService {
       };
     }).toList();
 
-    // For now we don't support deletions in the app UI yet, so send empty.
+    // Build the "deleted" array from pendingDeletes
+    final deletedList = pendingDeletes.map((d) {
+      return {
+        'kind': d.kind, // "lift" or "pr"
+        'lift_name': d.liftName,
+        // For lift deletes, backend ignores 'date', so it's fine if null
+        'date': d.date,
+        'deleted_at': d.deletedAtIso,
+      };
+    }).toList();
+
     return {
       'lifts': liftList,
       'pr_records': prRecordsList,
-      'deleted': <Map<String, dynamic>>[],
+      'deleted': deletedList,
     };
   }
 
   /// Helper: merge lifts + pr_records from server into Lift model list.
-  ///
-  /// serverLifts rows look like:
-  /// {
-  ///   "id": "...",
-  ///   "name": "Squat",
-  ///   "notes": "...",
-  ///   "last_updated": "2025-10-24T20:31:16.249963+00:00",
-  ///   "strength_weight": 225,
-  ///   "strength_reps": 5,
-  ///   "endurance_weight": 135,
-  ///   "endurance_reps": 15
-  /// }
-  ///
-  /// serverPRs rows look like:
-  /// {
-  ///   "id": "...",
-  ///   "lift_name": "Squat",
-  ///   "date": "2025-10-24T20:31:16.249963+00:00",
-  ///   "strength_weight": 225,
-  ///   "strength_reps": 5,
-  ///   "endurance_weight": 135,
-  ///   "endurance_reps": 15,
-  ///   "notes": "New PR",
-  ///   "updated_at": "2025-10-24T20:31:16.249963+00:00"
-  /// }
-  ///
   List<Lift> _mergeServerData(
     List<Map<String, dynamic>> serverLifts,
     List<Map<String, dynamic>> serverPRs,
@@ -162,20 +149,20 @@ class SyncService {
       prByLift[ln]!.add(pr);
     }
 
-    // For each lift, build its Lift object and attach its PR history
     final result = <Lift>[];
 
     for (final l in serverLifts) {
       final liftName = l['name'] as String;
 
-      // Build PR history list for this lift
+      // Build PR history (oldest -> newest)
       final historyForLift = (prByLift[liftName] ?? [])
-          // sort oldest -> newest by date, just like HistoryView expects
-          ..sort((a, b) {
-            final da = DateTime.tryParse(a['date'] ?? '') ?? DateTime.now();
-            final db = DateTime.tryParse(b['date'] ?? '') ?? DateTime.now();
-            return da.compareTo(db);
-          });
+        ..sort((a, b) {
+          final da =
+              DateTime.tryParse(a['date'] ?? '') ?? DateTime.now();
+          final db =
+              DateTime.tryParse(b['date'] ?? '') ?? DateTime.now();
+          return da.compareTo(db);
+        });
 
       final prHistory = historyForLift.map((rec) {
         final dateParsed =
@@ -210,16 +197,17 @@ class SyncService {
         prHistory: prHistory,
       );
 
-      // We also need suspensionTag for AzListView
-      lift.suspensionTag = lift.name.isNotEmpty
-          ? lift.name[0].toUpperCase()
-          : '#';
+      lift.suspensionTag =
+          lift.name.isNotEmpty ? lift.name[0].toUpperCase() : '#';
 
       result.add(lift);
     }
 
-    // Sort same way LiftsView does
-    result.sort((a, b) => a.name.toLowerCase().compareTo(b.name.toLowerCase()));
+    // Sort alphabetically for consistency with LiftsView
+    result.sort(
+      (a, b) => a.name.toLowerCase().compareTo(b.name.toLowerCase()),
+    );
+
     return result;
   }
 }
