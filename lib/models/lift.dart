@@ -1,4 +1,5 @@
 import 'package:azlistview/azlistview.dart';
+import '../utils/lift_normalizer.dart'; // for groupForCanonicalId()
 
 class Lift extends ISuspensionBean {
   String name;
@@ -8,7 +9,10 @@ class Lift extends ISuspensionBean {
   DateTime lastUpdated;
   List<PRRecord> prHistory;
 
-  // Used by AZListView for alphabetical headers
+  /// Optional canonical ID (null for custom lifts)
+  String? canonicalId;
+
+  /// Used by AZListView for alphabetical headers
   String suspensionTag = '';
 
   Lift({
@@ -18,24 +22,22 @@ class Lift extends ISuspensionBean {
     this.notes = '',
     DateTime? lastUpdated,
     List<PRRecord>? prHistory,
+    this.canonicalId,
   })  : strengthPR = strengthPR ?? PRSet(weight: 0, reps: 0),
         endurancePR = endurancePR ?? PRSet(weight: 0, reps: 0),
         lastUpdated = lastUpdated ?? DateTime.now(),
         prHistory = prHistory ?? [];
 
-  /// These are the permanent, seeded lifts that must always exist.
-  /// - Can't be deleted
-  /// - Can't be renamed
-  /// - But their PR numbers / notes CAN change
-  bool get isMainLift =>
-      ['Barbell Bench Press', 'Incline Bench Press', 'Squat']
-          .contains(name);
+  /// Recognized = matched to canonical list
+  bool get isRecognized => (canonicalId != null && canonicalId!.isNotEmpty);
 
-  /// UI rule helpers
-  bool get canDelete => !isMainLift;
-  bool get canRename => !isMainLift;
+  /// Canonical group label (e.g., "Chest", "Triceps"); defaults to "Custom"
+  String get group {
+    if (canonicalId == null || canonicalId!.isEmpty) return 'Custom';
+    return groupForCanonicalId(canonicalId!) ?? 'Custom';
+  }
 
-  /// Check if any PR increased compared to another lift
+  /// Compare PRs
   bool hasPRsIncreasedComparedTo(Lift other) {
     return strengthPR.isBetterThan(other.strengthPR) ||
         endurancePR.isBetterThan(other.endurancePR);
@@ -49,6 +51,7 @@ class Lift extends ISuspensionBean {
       'notes': notes,
       'lastUpdated': lastUpdated.toIso8601String(),
       'prHistory': prHistory.map((record) => record.toMap()).toList(),
+      'canonicalId': canonicalId,
     };
   }
 
@@ -64,10 +67,11 @@ class Lift extends ISuspensionBean {
               ?.map((e) => PRRecord.fromMap(e))
               .toList() ??
           [],
+      canonicalId: map['canonicalId'],
     );
   }
 
-  /// AZListView: return the tag used for alphabetical header
+  /// AZListView alphabetical header
   @override
   String getSuspensionTag() => suspensionTag;
 }
@@ -113,7 +117,6 @@ class PRSet {
     required this.reps,
   });
 
-  /// Comparison logic: higher weight wins, or same weight but more reps
   bool isBetterThan(PRSet other) {
     return weight > other.weight ||
         (weight == other.weight && reps > other.reps);
@@ -124,17 +127,12 @@ class PRSet {
     return '$weight lbs x $reps reps';
   }
 
-  Map<String, dynamic> toMap() {
-    return {
-      'weight': weight,
-      'reps': reps,
-    };
-  }
+  Map<String, dynamic> toMap() => {'weight': weight, 'reps': reps};
 
   factory PRSet.fromMap(Map<String, dynamic> map) {
     return PRSet(
       weight: map['weight'] ?? 0,
       reps: map['reps'] ?? 0,
     );
-  }
+    }
 }

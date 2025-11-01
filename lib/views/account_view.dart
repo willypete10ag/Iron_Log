@@ -1,10 +1,17 @@
 import 'package:flutter/material.dart';
 import '../services/auth_api.dart';
 import '../utils/session.dart';
+import '../utils/toast.dart';
 
 class AccountView extends StatefulWidget {
-  final VoidCallback? onSignedIn; // AuthGate uses this
-  const AccountView({super.key, this.onSignedIn});
+  final VoidCallback? onSignedIn;   // AuthGate uses this to flip into the app
+  final VoidCallback? onSignedOut;  // so AuthGate can react to logout
+
+  const AccountView({
+    super.key,
+    this.onSignedIn,
+    this.onSignedOut,
+  });
 
   @override
   State<AccountView> createState() => _AccountViewState();
@@ -21,8 +28,12 @@ class _AccountViewState extends State<AccountView> {
   // auth controllers
   final _usernameCtrl = TextEditingController();
   final _passwordCtrl = TextEditingController();
-  final _confirmCtrl  = TextEditingController();
+  final _confirmCtrl = TextEditingController();
   final _authFormKey = GlobalKey<FormState>();
+
+  // visibility toggles
+  bool _hidePassword = true;
+  bool _hideConfirm = true;
 
   @override
   void initState() {
@@ -39,7 +50,7 @@ class _AccountViewState extends State<AccountView> {
         setState(() => _remoteUser = me);
       }
     } catch (_) {
-      // ignore; likely no token or expired
+      // probably no/expired token; silently ignore
     } finally {
       if (mounted) setState(() => _busy = false);
     }
@@ -49,28 +60,66 @@ class _AccountViewState extends State<AccountView> {
     if (!_authFormKey.currentState!.validate()) return;
     final u = _usernameCtrl.text.trim();
     final p = _passwordCtrl.text;
+
     setState(() => _busy = true);
+
     try {
       if (isRegister) {
+        // validate confirm matches
         if (_confirmCtrl.text != p) {
-          _snack('Passwords do not match.');
+          if (mounted) {
+            showIronToast(
+              context,
+              'Passwords do not match.',
+              leading: const Icon(Icons.error),
+            );
+            setState(() => _busy = false); // FIX: ensure busy resets
+          }
           return;
         }
+
         await _api.register(u, p);
+
+        if (mounted) {
+          showIronToast(
+            context,
+            'Account created.',
+            leading: const Icon(Icons.check_circle),
+          );
+        }
       } else {
+        // normal login
         await _api.login(u, p);
+
+        if (mounted) {
+          showIronToast(
+            context,
+            'Welcome back!',
+            leading: const Icon(Icons.login),
+          );
+        }
       }
+
+      // pull /me, save it, update UI
       final me = await _api.me();
+
       setState(() {
         _remoteUser = me;
         _usernameCtrl.clear();
         _passwordCtrl.clear();
         _confirmCtrl.clear();
       });
-      _snack(isRegister ? 'Account created. Signed in as ${me['username']}' : 'Welcome back, ${me['username']}!');
+
+      // notify AuthGate
       widget.onSignedIn?.call();
     } catch (e) {
-      _snack(e.toString().replaceFirst('Exception: ', ''));
+      if (mounted) {
+        showIronToast(
+          context,
+          e.toString().replaceFirst('Exception: ', ''),
+          leading: const Icon(Icons.warning),
+        );
+      }
     } finally {
       if (mounted) setState(() => _busy = false);
     }
@@ -78,14 +127,25 @@ class _AccountViewState extends State<AccountView> {
 
   Future<void> _signOut() async {
     setState(() => _busy = true);
-    await Session.clear();
-    setState(() => _remoteUser = null);
-    _snack('Signed out.');
-    if (mounted) setState(() => _busy = false);
-  }
 
-  void _snack(String msg) {
-    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));
+    await Session.clear();
+
+    setState(() {
+      _remoteUser = null;
+    });
+
+    if (mounted) {
+      showIronToast(
+        context,
+        'Signed out.',
+        leading: const Icon(Icons.logout),
+      );
+    }
+
+    // Tell AuthGate you’re out. This flips the app back to login.
+    widget.onSignedOut?.call();
+
+    if (mounted) setState(() => _busy = false);
   }
 
   @override
@@ -101,7 +161,7 @@ class _AccountViewState extends State<AccountView> {
     final signedIn = _remoteUser != null;
 
     return Scaffold(
-      appBar: AppBar(title: const Text('Account')),
+      // No inner AppBar; main.dart provides the top AppBar
       body: AbsorbPointer(
         absorbing: _busy,
         child: ListView(
@@ -132,9 +192,13 @@ class _AccountViewState extends State<AccountView> {
   }
 
   Widget _buildAuthCard() {
+    final cs = Theme.of(context).colorScheme;
+    final tt = Theme.of(context).textTheme;
+
     return _busyOverlay(
       child: Card(
-        color: Colors.grey[900],
+        color: cs.surface.withOpacity(0.35),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
         child: Padding(
           padding: const EdgeInsets.all(16),
           child: Form(
@@ -142,44 +206,83 @@ class _AccountViewState extends State<AccountView> {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
-                Text(isRegister ? 'Create Account' : 'Sign In',
-                    style: const TextStyle(fontSize: 20, fontWeight: FontWeight.bold)),
+                Text(
+                  isRegister ? 'Create Account' : 'Sign In',
+                  style: tt.titleMedium?.copyWith(
+                    fontSize: 20,
+                    fontWeight: FontWeight.bold,
+                    color: cs.secondary,
+                  ),
+                ),
+
                 const SizedBox(height: 16),
+
                 TextFormField(
                   controller: _usernameCtrl,
                   decoration: const InputDecoration(
                     labelText: 'Username',
                     border: OutlineInputBorder(),
                   ),
-                  validator: (v) => (v == null || v.trim().isEmpty) ? 'Enter a username' : null,
+                  autofillHints: const [AutofillHints.username],
+                  textInputAction: TextInputAction.next,
+                  validator: (v) =>
+                      (v == null || v.trim().isEmpty) ? 'Enter a username' : null,
                 ),
+
                 const SizedBox(height: 12),
+
                 TextFormField(
                   controller: _passwordCtrl,
-                  decoration: const InputDecoration(
+                  decoration: InputDecoration(
                     labelText: 'Password',
-                    border: OutlineInputBorder(),
+                    border: const OutlineInputBorder(),
+                    suffixIcon: IconButton(
+                      icon: Icon(_hidePassword ? Icons.visibility : Icons.visibility_off),
+                      onPressed: () => setState(() => _hidePassword = !_hidePassword),
+                      tooltip: _hidePassword ? 'Show password' : 'Hide password',
+                    ),
                   ),
-                  obscureText: true,
-                  validator: (v) => (v == null || v.isEmpty) ? 'Enter a password' : null,
+                  obscureText: _hidePassword,
+                  autofillHints: const [AutofillHints.password],
+                  textInputAction: isRegister ? TextInputAction.next : TextInputAction.done,
+                  validator: (v) =>
+                      (v == null || v.isEmpty) ? 'Enter a password' : null,
                 ),
+
                 if (isRegister) ...[
                   const SizedBox(height: 12),
                   TextFormField(
                     controller: _confirmCtrl,
-                    decoration: const InputDecoration(
+                    decoration: InputDecoration(
                       labelText: 'Confirm Password',
-                      border: OutlineInputBorder(),
+                      border: const OutlineInputBorder(),
+                      suffixIcon: IconButton(
+                        icon: Icon(_hideConfirm ? Icons.visibility : Icons.visibility_off),
+                        onPressed: () => setState(() => _hideConfirm = !_hideConfirm),
+                        tooltip: _hideConfirm ? 'Show password' : 'Hide password',
+                      ),
                     ),
-                    obscureText: true,
-                    validator: (v) => (v == null || v.isEmpty) ? 'Confirm password' : null,
+                    obscureText: _hideConfirm,
+                    textInputAction: TextInputAction.done,
+                    validator: (v) =>
+                        (v == null || v.isEmpty) ? 'Confirm password' : null,
                   ),
                 ],
+
                 const SizedBox(height: 16),
-                ElevatedButton(onPressed: _submitAuth, child: Text(isRegister ? 'Create Account' : 'Sign In')),
+
+                ElevatedButton(
+                  onPressed: _submitAuth,
+                  child: Text(isRegister ? 'Create Account' : 'Sign In'),
+                ),
+
                 TextButton(
                   onPressed: () => setState(() => isRegister = !isRegister),
-                  child: Text(isRegister ? 'Already have an account? Sign in' : 'No account? Create one'),
+                  child: Text(
+                    isRegister
+                        ? 'Already have an account? Sign in'
+                        : 'No account? Create one',
+                  ),
                 ),
               ],
             ),
@@ -190,36 +293,54 @@ class _AccountViewState extends State<AccountView> {
   }
 
   Widget _buildProfileCard(Map<String, dynamic> user) {
+    final cs = Theme.of(context).colorScheme;
+    final tt = Theme.of(context).textTheme;
+
     return Card(
-      color: Colors.grey[900],
+      color: cs.surface.withOpacity(0.35),
       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
       child: Padding(
         padding: const EdgeInsets.all(16),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            const Text('Signed In',
-                style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold, color: Colors.orangeAccent)),
-            const SizedBox(height: 12),
-            ListTile(
-              contentPadding: EdgeInsets.zero,
-              leading: const Icon(Icons.person, color: Colors.orangeAccent),
-              title: Text(
-                user['username'] ?? '',
-                style: const TextStyle(fontSize: 18, color: Colors.white, fontWeight: FontWeight.bold),
-              ),
-              subtitle: Text(
-                'User ID: ${(user['id'] ?? '').toString().substring(0, 12)}...',
-                style: const TextStyle(fontSize: 13, color: Colors.white70),
+            Text(
+              'Signed In',
+              style: tt.titleMedium?.copyWith(
+                fontSize: 20,
+                fontWeight: FontWeight.bold,
+                color: cs.primary,
               ),
             ),
+            const SizedBox(height: 12),
+
+            ListTile(
+              contentPadding: EdgeInsets.zero,
+              leading: CircleAvatar(
+                backgroundColor: cs.primary,
+                child: const Icon(Icons.person, color: Colors.white),
+              ),
+              title: Text(
+                user['username'] ?? '',
+                style: tt.titleMedium?.copyWith(fontSize: 18, fontWeight: FontWeight.bold),
+              ),
+              subtitle: Text(
+                'User ID: ${(user['id'] ?? '').toString().padRight(12).substring(0, 12)}...',
+                style: tt.bodySmall?.copyWith(
+                  color: tt.bodySmall?.color?.withOpacity(0.7),
+                ),
+              ),
+            ),
+
             const SizedBox(height: 8),
+
             ElevatedButton.icon(
               onPressed: _signOut,
-              icon: const Icon(Icons.logout, color: Colors.white),
-              label: const Text('Sign Out', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+              icon: const Icon(Icons.logout),
+              label: const Text('Sign Out'),
               style: ElevatedButton.styleFrom(
-                backgroundColor: Colors.redAccent,
+                backgroundColor: cs.error,
+                foregroundColor: Colors.white,
                 padding: const EdgeInsets.symmetric(vertical: 12),
                 shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
               ),

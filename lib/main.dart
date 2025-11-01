@@ -11,6 +11,74 @@ void main() {
   runApp(const IronLogApp());
 }
 
+/// Centralized brand colors (from your logo)
+class IronColors {
+  static const background = Color(0xFF3B3541); // charcoal
+  static const primary = Color(0xFFF57C00); // orange
+  static const secondary = Color(0xFF2EC6F5); // cyan
+  static const onDarkText = Color(0xFFF5F5F5);
+}
+
+final ThemeData ironLogTheme = ThemeData(
+  brightness: Brightness.dark,
+  scaffoldBackgroundColor: IronColors.background,
+  primaryColor: IronColors.primary,
+  colorScheme: const ColorScheme.dark(
+    primary: IronColors.primary,
+    secondary: IronColors.secondary,
+    surface: IronColors.background,
+    onPrimary: Colors.white,
+    onSecondary: Colors.white,
+  ),
+  appBarTheme: const AppBarTheme(
+    backgroundColor: IronColors.background,
+    elevation: 0,
+    titleTextStyle: TextStyle(
+      color: IronColors.secondary,
+      fontWeight: FontWeight.w700,
+      fontSize: 20,
+      letterSpacing: 0.3,
+    ),
+    iconTheme: IconThemeData(color: IronColors.secondary),
+  ),
+  floatingActionButtonTheme: const FloatingActionButtonThemeData(
+    backgroundColor: IronColors.primary,
+    foregroundColor: Colors.white,
+  ),
+  elevatedButtonTheme: ElevatedButtonThemeData(
+    style: ElevatedButton.styleFrom(
+      backgroundColor: IronColors.primary,
+      foregroundColor: Colors.white,
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+    ),
+  ),
+  snackBarTheme: const SnackBarThemeData(
+    backgroundColor: IronColors.primary,
+    contentTextStyle: TextStyle(color: Colors.white),
+    behavior: SnackBarBehavior.floating,
+  ),
+  // ⬇️ Removed tabBarTheme to avoid SDK type mismatch
+  bottomNavigationBarTheme: const BottomNavigationBarThemeData(
+    backgroundColor: IronColors.background,
+    selectedItemColor: IronColors.secondary,
+    unselectedItemColor: Colors.white70,
+    type: BottomNavigationBarType.fixed,
+    selectedIconTheme: IconThemeData(size: 26),
+    unselectedIconTheme: IconThemeData(size: 24),
+  ),
+  dividerColor: Colors.white10,
+  textTheme: const TextTheme(
+    bodyLarge: TextStyle(color: IronColors.onDarkText),
+    bodyMedium: TextStyle(color: IronColors.onDarkText),
+    titleMedium: TextStyle(
+      color: IronColors.onDarkText,
+      fontWeight: FontWeight.w600,
+      letterSpacing: 0.2,
+    ),
+  ),
+);
+
 class IronLogApp extends StatelessWidget {
   const IronLogApp({super.key});
 
@@ -18,11 +86,8 @@ class IronLogApp extends StatelessWidget {
   Widget build(BuildContext context) {
     return MaterialApp(
       title: 'IronLog',
-      theme: ThemeData.dark().copyWith(
-        colorScheme: ColorScheme.fromSeed(seedColor: Colors.orangeAccent),
-        scaffoldBackgroundColor: Colors.black,
-      ),
-      home: const AuthGate(), // start with AuthGate
+      theme: ironLogTheme,
+      home: const AuthGate(),
       debugShowCheckedModeBanner: false,
     );
   }
@@ -60,7 +125,7 @@ class _AuthGateState extends State<AuthGate> {
     try {
       await _api.me();
 
-      // 🔄 pull latest server data whenever token is still valid
+      // Pull latest server data if still valid
       try {
         await _sync.pullFromServer();
       } catch (e) {
@@ -81,12 +146,10 @@ class _AuthGateState extends State<AuthGate> {
   }
 
   Future<void> _handleSignedIn() async {
-    // Just logged in or registered — token now valid
     try {
       await _sync.pullFromServer();
     } catch (e) {
       debugPrint('pullFromServer error: $e');
-      // If server has nothing yet, seed it
       try {
         await _sync.pushToServer();
       } catch (e2) {
@@ -99,6 +162,12 @@ class _AuthGateState extends State<AuthGate> {
     });
   }
 
+  void _handleSignedOut() {
+    setState(() {
+      _signedIn = false;
+    });
+  }
+
   @override
   Widget build(BuildContext context) {
     if (_loading) {
@@ -108,15 +177,19 @@ class _AuthGateState extends State<AuthGate> {
     }
 
     if (!_signedIn) {
-      return AccountView(onSignedIn: _handleSignedIn);
+      return AccountView(
+        onSignedIn: _handleSignedIn,
+        onSignedOut: _handleSignedOut,
+      );
     }
 
-    return const IronLogHome();
+    return IronLogHome(onSignedOut: _handleSignedOut);
   }
 }
 
 class IronLogHome extends StatefulWidget {
-  const IronLogHome({super.key});
+  final VoidCallback onSignedOut;
+  const IronLogHome({super.key, required this.onSignedOut});
 
   @override
   State<IronLogHome> createState() => _IronLogHomeState();
@@ -125,12 +198,30 @@ class IronLogHome extends StatefulWidget {
 class _IronLogHomeState extends State<IronLogHome> {
   int _selectedIndex = 0;
 
-  final List<Widget> _pages = const [
-    LiftsView(),
-    HistoryView(),
-    LiftProgressChartView(),
-    AccountView(),
-  ];
+  late final List<Widget> _pages;
+  late final List<String> _titles;
+
+  @override
+  void initState() {
+    super.initState();
+
+    _pages = [
+      const LiftsView(),
+      const HistoryView(),
+      const LiftProgressChartView(),
+      AccountView(
+        onSignedIn: () {}, // no-op for this context
+        onSignedOut: widget.onSignedOut,
+      ),
+    ];
+
+    _titles = const [
+      'Lifts',
+      'History',
+      'Progress',
+      'Account',
+    ];
+  }
 
   void _onItemTapped(int index) {
     setState(() {
@@ -140,20 +231,44 @@ class _IronLogHomeState extends State<IronLogHome> {
 
   @override
   Widget build(BuildContext context) {
+    final title = _titles[_selectedIndex];
+
     return Scaffold(
+      appBar: AppBar(
+        title: Row(
+          children: [
+            // App logo (ensure pubspec lists assets/images/ironlog_logo.png)
+            Image.asset(
+              'assets/images/ironlog_logo.png',
+              height: 28,
+            ),
+            const SizedBox(width: 10),
+            Text(title),
+          ],
+        ),
+      ),
       body: _pages[_selectedIndex],
       bottomNavigationBar: BottomNavigationBar(
         items: const [
           BottomNavigationBarItem(
-              icon: Icon(Icons.fitness_center), label: 'Lifts'),
-          BottomNavigationBarItem(icon: Icon(Icons.history), label: 'History'),
+            icon: Icon(Icons.fitness_center),
+            label: 'Lifts',
+          ),
           BottomNavigationBarItem(
-              icon: Icon(Icons.show_chart), label: 'Progress'),
-          BottomNavigationBarItem(icon: Icon(Icons.person), label: 'Account'),
+            icon: Icon(Icons.history),
+            label: 'History',
+          ),
+          BottomNavigationBarItem(
+            icon: Icon(Icons.show_chart),
+            label: 'Progress',
+          ),
+          BottomNavigationBarItem(
+            icon: Icon(Icons.person),
+            label: 'Account',
+          ),
         ],
         currentIndex: _selectedIndex,
-        selectedItemColor: Colors.orangeAccent,
-        unselectedItemColor: Colors.white70,
+        // rely on theme for colors
         onTap: _onItemTapped,
       ),
     );
